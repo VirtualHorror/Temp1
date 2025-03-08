@@ -1,13 +1,11 @@
 import React, { useState } from 'react';
-import { Upload, BarChart2, FileCheck, AlertCircle } from 'lucide-react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from 'recharts';
+import { Upload, AlertCircle } from 'lucide-react';
 
 function App() {
   const [file, setFile] = useState<File | null>(null);
-  const [data, setData] = useState<any[]>([]);
-  const [fileHash, setFileHash] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [data, setData] = useState<any>(null);
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = event.target.files?.[0];
@@ -27,36 +25,26 @@ function App() {
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        const errorData = await response.json();
+        throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
       }
 
       const result = await response.json();
-      
-      if (result.error) {
-        throw new Error(result.error);
-      }
-      
-      setData(result.data);
-      setFileHash(result.hash);
+      setData(result);
     } catch (error) {
       console.error('Error uploading file:', error);
       setError(error instanceof Error ? error.message : 'Failed to upload file');
-      setData([]);
-      setFileHash('');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-gray-100">
-      <div className="container mx-auto px-4 py-8">
-        <div className="bg-white rounded-lg shadow-md p-6 mb-8">
-          <h1 className="text-3xl font-bold mb-4 text-gray-800">IoT Evidence Extractor</h1>
-          <p className="text-gray-600 mb-6">
-            Upload Google Takeout data to extract and analyze fitness information
-          </p>
-
+    <div className="min-h-screen bg-gray-100 p-8">
+      <div className="max-w-2xl mx-auto">
+        <div className="bg-white rounded-lg shadow-md p-6">
+          <h1 className="text-2xl font-bold mb-4">IoT Evidence Extractor</h1>
+          
           <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center">
             <input
               type="file"
@@ -91,35 +79,35 @@ function App() {
             </div>
           )}
 
-          {fileHash && (
-            <div className="mt-4 p-4 bg-gray-50 rounded-lg">
-              <div className="flex items-center gap-2 text-gray-700">
-                <FileCheck className="w-5 h-5" />
-                <span>File Hash: {fileHash}</span>
+          {data && (
+            <div className="mt-6">
+              <h2 className="text-lg font-semibold mb-2">Extracted Data</h2>
+              <div className="bg-gray-50 p-4 rounded-lg">
+                <p>Devices found: {data.devices.length}</p>
+                <p>Metrics found: {data.metrics.length}</p>
+                <p>Total data points: {data.data.length}</p>
+              </div>
+
+              <div className="mt-4">
+                <h3 className="font-medium mb-2">Available Metrics:</h3>
+                <ul className="list-disc list-inside">
+                  {data.metrics.map((metric: string, index: number) => (
+                    <li key={index} className="text-gray-700">{metric}</li>
+                  ))}
+                </ul>
+              </div>
+
+              <div className="mt-4">
+                <h3 className="font-medium mb-2">Devices:</h3>
+                <ul className="list-disc list-inside">
+                  {data.devices.map((device: string, index: number) => (
+                    <li key={index} className="text-gray-700">{device}</li>
+                  ))}
+                </ul>
               </div>
             </div>
           )}
         </div>
-
-        {data.length > 0 && (
-          <div className="bg-white rounded-lg shadow-md p-6">
-            <div className="flex items-center gap-2 mb-6">
-              <BarChart2 className="w-6 h-6 text-gray-700" />
-              <h2 className="text-2xl font-semibold text-gray-800">Data Visualization</h2>
-            </div>
-
-            <div className="overflow-x-auto">
-              <LineChart width={800} height={400} data={data}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="timestamp" />
-                <YAxis />
-                <Tooltip />
-                <Legend />
-                <Line type="monotone" dataKey="value" stroke="#8884d8" />
-              </LineChart>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );
