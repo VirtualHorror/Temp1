@@ -9,11 +9,24 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const app = express();
-const upload = multer({ dest: 'uploads/' });
+// Configure multer with larger file size limits
+const upload = multer({
+  dest: 'uploads/',
+  limits: {
+    fileSize: 1024 * 1024 * 100, // 100MB limit
+  }
+});
 
-app.use(cors());
-app.use(express.json());
+const app = express();
+
+// Configure CORS for Codespaces
+app.use(cors({
+  origin: process.env.CODESPACES ? [
+    process.env.CODESPACE_NAME ? `https://${process.env.CODESPACE_NAME}-5173.${process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN}` : '*'
+  ] : '*'
+}));
+
+app.use(express.json({ limit: '100mb' }));
 
 // Ensure directories exist
 ['uploads', 'extracted'].forEach(dir => {
@@ -34,21 +47,18 @@ function findFitFiles(dir: string): string[] {
         const stat = fs.statSync(fullPath);
         
         if (stat.isDirectory()) {
-          // Look specifically for Takeout/Fit or similar directories
-          if (file === 'Fit' || file === 'Takeout' || /fitness/i.test(file)) {
-            traverse(fullPath);
-          } else if (fullPath.includes('Takeout') || fullPath.includes('Fit')) {
+          // Check if we're in the expected Takeout/Fit/All Data path
+          if (file === 'Takeout' || file === 'Fit' || file === 'All Data' || /fitness/i.test(file)) {
+            console.log('Traversing directory:', fullPath);
             traverse(fullPath);
           }
         } else if (file.endsWith('.json')) {
-          // Only include files that match Google Fit data patterns
-          if (
-            file.includes('derived_') ||
-            file.includes('com.google.') ||
-            file.includes('fitness.') ||
-            fullPath.includes('/Fit/') ||
-            fullPath.includes('/fitness/')
-          ) {
+          // Check if the file is in the correct path structure
+          const normalizedPath = fullPath.replace(/\\/g, '/');
+          if (normalizedPath.includes('Takeout/Fit') || 
+              normalizedPath.includes('Takeout/Fit/All Data') || 
+              normalizedPath.includes('/fitness/')) {
+            console.log('Found Fit data file:', file);
             results.push(fullPath);
           }
         }
@@ -94,14 +104,17 @@ function parseMetricName(filename: string): string {
 function extractValue(point: any): any {
   if (!point) return null;
 
-  // Check for common value patterns
+  // Handle nested value structures
   if (point.value !== undefined) {
     if (Array.isArray(point.value)) {
       const firstValue = point.value[0];
       if (firstValue) {
-        return firstValue.intVal ?? firstValue.fpVal ?? firstValue.stringVal ?? firstValue;
+        // Handle different value types
+        if (typeof firstValue === 'object') {
+          return firstValue.intVal ?? firstValue.fpVal ?? firstValue.stringVal ?? null;
+        }
+        return firstValue;
       }
-      return point.value[0];
     }
     return point.value;
   }
@@ -149,14 +162,44 @@ function getTimestamp(point: any): string | null {
 
   for (const field of timeFields) {
     if (point[field] && typeof point[field] === 'string') {
-      const timestamp = new Date(point[field]);
-      if (!isNaN(timestamp.getTime())) {
-        return timestamp.toISOString();
+      try {
+        const timestamp = new Date(point[field]);
+        if (!isNaN(timestamp.getTime())) {
+          return timestamp.toISOString();
+        }
+      } catch (error) {
+        console.error(`Error parsing timestamp from ${field}:`, error);
       }
     }
   }
 
   return null;
+}
+
+function getDeviceInfo(point: any): string {
+  if (!point) return 'Unknown Device';
+
+  if (point.device) {
+    if (typeof point.device === 'string') {
+      return point.device;
+    }
+    return point.device.name || 
+           point.device.manufacturer || 
+           point.device.model || 
+           point.device.type ||
+           'Unknown Device';
+  }
+
+  if (point.originDataSourceId) {
+    // Try to extract device info from the data source ID
+    const match = point.originDataSourceId.match(/raw:com\.google\.(\w+):/);
+    if (match) {
+      return match[1].replace(/_/g, ' ').toLowerCase();
+    }
+    return point.originDataSourceId;
+  }
+
+  return 'Unknown Device';
 }
 
 app.post('/upload', upload.single('file'), async (req, res) => {
@@ -171,10 +214,12 @@ app.post('/upload', upload.single('file'), async (req, res) => {
       throw new Error('Please upload a ZIP file from Google Takeout');
     }
 
+    console.log('Processing uploaded file:', req.file.originalname);
+    
     const zip = new AdmZip(req.file.path);
     extractPath = path.join('extracted', req.file.filename);
     
-    // Extract the zip file
+    console.log('Extracting to:', extractPath);
     zip.extractAllTo(extractPath, true);
     
     // Find all JSON files in Fit directories
@@ -197,22 +242,20 @@ app.post('/upload', upload.single('file'), async (req, res) => {
         const metric = parseMetricName(path.basename(filePath));
         metrics.add(metric);
         
-        const data = JSON.parse(content);
+        let data;
+        try {
+          data = JSON.parse(content);
+        } catch (error) {
+          console.error(`Error parsing JSON from ${filePath}:`, error);
+          continue;
+        }
+
         const points = Array.isArray(data) ? data : [data];
         
         for (const point of points) {
-          // Extract device info
-          let device = 'Unknown Device';
-          if (point.device) {
-            device = typeof point.device === 'string' 
-              ? point.device 
-              : point.device.name || point.device.manufacturer || point.device.model || 'Unknown Device';
-          } else if (point.originDataSourceId) {
-            device = point.originDataSourceId;
-          }
+          const device = getDeviceInfo(point);
           devices.add(device);
 
-          // Extract value and timestamp
           const value = extractValue(point);
           const timestamp = getTimestamp(point);
 
@@ -241,7 +284,7 @@ app.post('/upload', upload.single('file'), async (req, res) => {
     // Sort by timestamp
     allData.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
-    console.log(`Processed ${allData.length} data points`);
+    console.log(`Successfully processed ${allData.length} data points`);
 
     res.json({
       success: true,
